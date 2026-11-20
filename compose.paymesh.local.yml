@@ -1,0 +1,32 @@
+name: paymesh-local-5433
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    container_name: paymesh-local-db-5433
+    restart: unless-stopped
+    network_mode: bridge
+    environment:
+      POSTGRES_USER: paymesh_admin
+      POSTGRES_PASSWORD: ${PAYMESH_ADMIN_PASSWORD:?Create the ignored .env.docker file first}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+      PAYMESH_DEV_USERNAME: paymesh_dev
+      PAYMESH_DEV_PASSWORD: ${PAYMESH_DEV_PASSWORD:?Create the ignored .env.docker file first}
+      PAYMESH_TEST_USERNAME: paymesh_test
+      PAYMESH_TEST_PASSWORD: ${PAYMESH_TEST_PASSWORD:?Create the ignored .env.docker file first}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - paymesh_data:/var/lib/postgresql/data
+      - ./docker/postgres/init/01-create-databases.sh:/docker-entrypoint-initdb.d/10-create-paymesh-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  paymesh_data:
+    name: paymesh_local_pg16_5433_data

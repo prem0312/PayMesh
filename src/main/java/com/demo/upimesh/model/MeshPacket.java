@@ -3,6 +3,9 @@ package com.demo.upimesh.model;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
 /**
  * The over-the-wire format. This is what hops from phone to phone via Bluetooth.
@@ -20,15 +23,20 @@ import jakarta.validation.constraints.Min;
 public class MeshPacket {
 
     @NotBlank
+    @Size(max = 64)
     private String packetId; // UUID, used by intermediates for gossip dedup
 
+    @NotNull
     @Min(0)
-    private int ttl; // Hops remaining; intermediates decrement it
+    @Max(10)
+    private Integer ttl; // Hops remaining; intermediates decrement it
 
     @NotNull
+    @Positive
     private Long createdAt; // epoch millis, when sender created the packet
 
     @NotBlank
+    @Size(max = 16_384)
     private String ciphertext; // base64(RSA-encrypted AES key + AES-GCM ciphertext)
 
     public MeshPacket() {}
@@ -36,8 +44,8 @@ public class MeshPacket {
     public String getPacketId() { return packetId; }
     public void setPacketId(String packetId) { this.packetId = packetId; }
 
-    public int getTtl() { return ttl; }
-    public void setTtl(int ttl) { this.ttl = ttl; }
+    public Integer getTtl() { return ttl; }
+    public void setTtl(Integer ttl) { this.ttl = ttl; }
 
     public Long getCreatedAt() { return createdAt; }
     public void setCreatedAt(Long createdAt) { this.createdAt = createdAt; }

@@ -6,6 +6,17 @@ import com.demo.upimesh.service.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.validation.annotation.Validated;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -21,6 +32,7 @@ import java.util.*;
  */
 @RestController
 @RequestMapping("/api")
+@Validated
 public class ApiController {
 
     @Autowired private ServerKeyHolder serverKey;
@@ -49,7 +61,7 @@ public class ApiController {
      * and inject it into the mesh at the given device.
      */
     @PostMapping("/demo/send")
-    public ResponseEntity<?> demoSend(@RequestBody DemoSendRequest req) throws Exception {
+    public ResponseEntity<?> demoSend(@Valid @RequestBody DemoSendRequest req) throws Exception {
         MeshPacket packet = demo.createPacket(
                 req.senderVpa, req.receiverVpa, req.amount, req.pin,
                 req.ttl == null ? 5 : req.ttl);
@@ -66,12 +78,35 @@ public class ApiController {
     }
 
     public static class DemoSendRequest {
+        @NotBlank
+        @Size(max = 100)
         public String senderVpa;
+
+        @NotBlank
+        @Size(max = 100)
         public String receiverVpa;
+
+        @NotNull
+        @DecimalMin("0.01")
+        @Digits(integer = 17, fraction = 2)
         public BigDecimal amount;
+
+        @NotBlank
+        @Pattern(regexp = "[0-9]{4,12}")
         public String pin;
+
+        @Min(1)
+        @Max(10)
         public Integer ttl;
+
+        @Size(max = 64)
         public String startDevice;
+
+        @AssertTrue
+        public boolean isDistinctAccounts() {
+            return senderVpa == null || receiverVpa == null
+                    || !senderVpa.equalsIgnoreCase(receiverVpa);
+        }
     }
 
     // -------------------------------------------------------------- mesh sim
@@ -154,9 +189,9 @@ public class ApiController {
      */
     @PostMapping("/bridge/ingest")
     public ResponseEntity<?> ingest(
-            @RequestBody MeshPacket packet,
-            @RequestHeader(value = "X-Bridge-Node-Id", defaultValue = "unknown") String bridgeNodeId,
-            @RequestHeader(value = "X-Hop-Count", defaultValue = "0") int hopCount) {
+            @Valid @RequestBody MeshPacket packet,
+            @RequestHeader(value = "X-Bridge-Node-Id", defaultValue = "unknown") @Size(max = 100) String bridgeNodeId,
+            @RequestHeader(value = "X-Hop-Count", defaultValue = "0") @Min(0) @Max(32) int hopCount) {
 
         BridgeIngestionService.IngestResult r = bridge.ingest(packet, bridgeNodeId, hopCount);
         return ResponseEntity.ok(r);

@@ -1,6 +1,13 @@
 package com.demo.upimesh.model;
 
 import java.math.BigDecimal;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
 
 /**
  * The actual payment instruction. After the server decrypts MeshPacket.ciphertext,
@@ -17,11 +24,29 @@ import java.math.BigDecimal;
  */
 public class PaymentInstruction {
 
+    @NotBlank
+    @Size(max = 100)
     private String senderVpa;
+
+    @NotBlank
+    @Size(max = 100)
     private String receiverVpa;
+
+    @NotNull
+    @DecimalMin("0.01")
+    @Digits(integer = 17, fraction = 2)
     private BigDecimal amount;
+
+    @NotBlank
+    @Pattern(regexp = "[a-fA-F0-9]{64}")
     private String pinHash;
+
+    @NotBlank
+    @Size(max = 64)
     private String nonce;     // UUID, unique per payment intent
+
+    @NotNull
+    @Positive
     private Long signedAt;    // epoch millis, when sender signed
 
     public PaymentInstruction() {}

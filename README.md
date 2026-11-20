@@ -1,405 +1,166 @@
-# UPI Offline Mesh — Demo
+# PayMesh — Offline Payment Mesh Demo
 
-A Spring Boot backend that demonstrates **offline UPI payments routed through a Bluetooth-style mesh network**. You're in a basement with zero connectivity. You send your friend ₹500. Your phone encrypts the payment, broadcasts it to nearby phones, and the packet hops device-to-device until *some* phone walks outside, gets 4G, and silently uploads it to this backend. The backend decrypts, deduplicates, and settles.
+PayMesh is a lightweight portfolio application that demonstrates a simulated, mesh-routed deferred payment flow. A dashboard creates an encrypted packet, simulated phones gossip it to one another, and an internet-connected bridge submits it to a Spring Boot backend. The backend claims the packet idempotently and settles a demo ledger in PostgreSQL.
 
-This repo is the **server side** of that system, plus a software simulator of the mesh so you can demo the whole flow on a single laptop without any real Bluetooth hardware.
+**This is not UPI, a bank integration, or a real payment system.** It moves only balances in a local demo database. The PIN is hashed into the encrypted demo instruction but is not verified and does not authenticate a user.
 
----
+## Requirements
 
-## Table of Contents
+- JDK 21 or newer (the Maven build targets Java 21).
+- PostgreSQL 16 recommended, running locally or at a configured URL.
+- A PostgreSQL database named upimesh and credentials with permission to connect and create tables/indexes in its schema. Flyway creates/updates the schema; it does not create the PostgreSQL server or database.
+- A demo username and a long, unique demo password, supplied through environment variables.
+- Network access on the first Maven Wrapper/dependency download.
 
-1. [What this demo proves](#what-this-demo-proves)
-2. [How to run it](#how-to-run-it)
-3. [The demo flow (step by step)](#the-demo-flow-step-by-step)
-4. [Architecture](#architecture)
-5. [The three hard problems and how they're solved](#the-three-hard-problems-and-how-theyre-solved)
-6. [File-by-file walkthrough](#file-by-file-walkthrough)
-7. [API reference](#api-reference)
-8. [Tests](#tests)
-9. [What's NOT real (and what would change for production)](#whats-not-real-and-what-would-change-for-production)
-10. [Honest limitations of the concept](#honest-limitations-of-the-concept)
+The normal application configuration uses PostgreSQL. The H2 configuration lives under src/test/resources/application-test.properties and is used by tests; it is not the normal application runtime database.
 
----
+## Prepare PostgreSQL
 
-## What this demo proves
+Create the database using a PostgreSQL role allowed to create databases. For example, from PowerShell:
 
-The system shows three things working end to end:
+~~~powershell
+psql -h localhost -U postgres -d postgres -c "CREATE DATABASE upimesh;"
+~~~
 
-1. **A payment can travel from sender to backend through untrusted intermediaries** without any of them being able to read or tamper with it. (Hybrid RSA + AES-GCM encryption.)
-2. **Even if the same payment reaches the backend simultaneously through multiple bridge nodes, it settles exactly once.** (Idempotency via atomic compare-and-set on the ciphertext hash.)
-3. **A tampered or replayed packet is rejected** before it touches the ledger.
+If the database already exists, skip this command. The local JDBC URL defaults to jdbc:postgresql://localhost:5432/upimesh. Set a local PostgreSQL username and password in your shell; the application does not contain fallback database credentials.
 
-You'll see all three in the dashboard.
+### Configure and start on Windows PowerShell
 
----
+~~~powershell
+$env:SPRING_DATASOURCE_URL = "jdbc:postgresql://localhost:5432/upimesh"
+$env:SPRING_DATASOURCE_USERNAME = "your-local-postgres-username"
+$env:SPRING_DATASOURCE_PASSWORD = "your-local-password"
+$env:PAYMESH_DEMO_USERNAME = "your-demo-username"
+$env:PAYMESH_DEMO_PASSWORD = "your-long-random-demo-password"
+.\mvnw.cmd spring-boot:run
+~~~
 
-## How to run it
+### Configure and start on macOS/Linux
 
-### Prerequisites
-
-- **JDK 17 or newer** installed and on PATH (or `JAVA_HOME` set). Check with `java -version`.
-- That's it. No database, no Redis, no Maven (the wrapper handles it). Just Java.
-
-### Run on Windows
-
-Open a terminal in the project folder and run:
-
-```cmd
-mvnw.cmd spring-boot:run
-```
-
-The first run downloads Maven (~10 MB) and all dependencies (~80 MB) — give it a couple of minutes. Subsequent runs start in a few seconds.
-
-### Run on Mac/Linux
-
-```bash
+~~~bash
+export SPRING_DATASOURCE_URL='jdbc:postgresql://localhost:5432/upimesh'
+export SPRING_DATASOURCE_USERNAME='your-local-postgres-username'
+export SPRING_DATASOURCE_PASSWORD='your-local-password'
+export PAYMESH_DEMO_USERNAME='your-demo-username'
+export PAYMESH_DEMO_PASSWORD='your-long-random-demo-password'
 ./mvnw spring-boot:run
-```
+~~~
 
-### Open the dashboard
+SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD, PAYMESH_DEMO_USERNAME, and PAYMESH_DEMO_PASSWORD are read by application.properties. The URL defaults to the local upimesh address, but database username/password and demo credentials are required; the app fails startup if they are missing. The server listens on port 8080 by default; SERVER_PORT can override that. .env.example is a reference template: Spring Boot does not load a .env file automatically, so set variables in your shell or IDE run configuration. Do not commit a real .env file.
 
-Once you see `Started UpiMeshApplication in X.XXX seconds`, open:
+Other supported environment overrides are LOGGING_LEVEL_COM_DEMO_UPIMESH, UPI_MESH_IDEMPOTENCY_TTL_SECONDS, and UPI_MESH_PACKET_MAX_AGE_SECONDS. They control application log verbosity, idempotency retention, and the maximum accepted packet age respectively. The application defaults are INFO, 86400 seconds, and 86400 seconds.
 
-**http://localhost:8080**
+On startup, Flyway applies the existing migrations and the application seeds Alice, Bob, Carol, and Dave only if the account table is empty. Open http://localhost:8080; the browser prompts for the demo username and password before loading the dashboard. It reuses those credentials for the dashboard API calls. Stop the server with Ctrl+C.
 
-You'll get a dark dashboard with everything you need to drive the demo.
+## Dashboard demonstration
 
-### Stop the server
+Use a fresh demo database if you want the initial seeded balances. The dashboard does not need or validate a real PIN; its default 1234 is only demo input.
 
-`Ctrl+C` in the terminal.
+1. Open the dashboard and wait for the account balances and simulated devices to load.
+2. Choose Alice → Bob, leave the amount at 500 and PIN at 1234, then click **Inject into Mesh**. The server-side demo helper builds a payment instruction, hashes the PIN into it, encrypts it with the server's current public key, and places a packet on phone-alice.
+3. Click **Run Gossip Round**. The simulator copies packets among all virtual devices and decrements the TTL. The default topology has one internet-connected device, phone-bridge.
+4. Click **Bridges Upload to Backend**. The bridge submits its packet; the backend hashes the ciphertext, claims it, decrypts it, checks instruction freshness, and atomically updates the sender/receiver balances, transaction ledger, and idempotency record. The dashboard refreshes balances and ledger every three seconds and logs the flush outcome.
+5. Click **Bridges Upload to Backend** again before resetting. The bridge still holds the same packet, so the backend should report it as a duplicate and leave the balances unchanged.
 
-### Run the tests
+Expected first outcome: SETTLED; expected second outcome: DUPLICATE_DROPPED. A payment with insufficient funds is recorded as REJECTED. Malformed or stale packets can be reported as INVALID.
 
-```cmd
-mvnw.cmd test
-```
+### Reset behavior
 
-The interesting one is `IdempotencyConcurrencyTest` — it fires three threads delivering the same packet simultaneously and asserts that exactly one settles.
+**Reset Mesh + Cache** clears packets from the simulated devices and calls IdempotencyService.clear(), which deletes idempotency records. It does **not** restore account balances, delete transaction history, or reseed demo accounts. The next payment created from the dashboard gets a new packet/ciphertext and can be processed normally, subject to the sender's remaining balance. To restore the original demo data, use a fresh local demo database; do not expect this button to reset the ledger.
 
----
+## How the payment path works
 
-## The demo flow (step by step)
+POST /api/demo/send simulates sender-side packet construction inside the server. MeshSimulatorService performs simplified in-memory gossip. POST /api/mesh/flush sends bridge-held packets concurrently to BridgeIngestionService in-process. The service calls IdempotencyService before decrypting; the database primary key arbitrates first claims. SettlementService locks and checks the claimed record and token, then commits balance changes, the transaction row, and the terminal idempotency state in one transaction.
 
-The dashboard has four buttons that walk through the full pipeline. The intended sequence:
+The default simulator has just one bridge. Repeating flush demonstrates sequential duplicate handling. The existing tests exercise concurrent bridge delivery; the dashboard's default topology does not simulate multiple bridges racing on the same packet.
 
-### Step 1 — Compose a payment
+A fresh RSA key pair is generated each time the application starts. Packets created before a restart cannot be decrypted after that restart.
 
-Choose sender, receiver, amount, PIN. Click **"📤 Inject into Mesh"**.
+## HTTP API
 
-**What actually happens on the backend:**
-- The server pretends to be the sender's phone.
-- It builds a `PaymentInstruction` with a unique nonce and current timestamp.
-- It encrypts that with the server's RSA public key (using hybrid encryption — see below).
-- It wraps the ciphertext in a `MeshPacket` with a TTL of 5.
-- It hands the packet to `phone-alice`, an offline virtual device.
+All API paths are under /api. JSON request/response examples use the application models; amounts are decimal numbers.
 
-You'll see `phone-alice` now holds 1 packet.
-
-### Step 2 — Run gossip rounds
-
-Click **"🔄 Run Gossip Round"**. Then click it again.
-
-Each round, every device that holds a packet broadcasts it to every other device within "Bluetooth range" (which, in our simulator, means everyone). TTL decrements per hop.
-
-After 1 round: every device holds the packet. After 2 rounds: still every device — TTL is just lower.
-
-In the real system this would happen organically as people walk past each other in the basement.
-
-### Step 3 — Bridge node walks outside
-
-Click **"📡 Bridges Upload to Backend"**.
-
-`phone-bridge` is the only device with `hasInternet=true`. The dashboard simulates that phone walking outside and getting 4G. It POSTs every packet it holds to `/api/bridge/ingest`.
-
-The backend pipeline runs:
-1. Hash the ciphertext (`SHA-256`).
-2. Try to claim the hash in the idempotency cache.
-3. If claimed: decrypt with the server's RSA private key.
-4. Verify freshness (signedAt within 24 hours).
-5. Run the debit/credit in a single DB transaction.
-
-Watch the **Account Balances** table — money has moved. Watch the **Transaction Ledger** — a new row appears.
-
-### Step 4 — Demonstrate idempotency (the killer feature)
-
-Reset the mesh. Inject a single packet. Run gossip 2 times. Now **all 5 devices hold the same packet, including multiple bridges in a more complex setup**.
-
-To really see idempotency in action, modify `MeshSimulatorService.java` to seed multiple bridge devices, or just:
-
-1. Click "Inject" once.
-2. Click "Gossip" twice.
-3. Click "Flush Bridges" — only `phone-bridge` is a bridge in the default seed, so just one upload happens.
-
-To exercise the *concurrent duplicate* case properly, run the test:
-```cmd
-mvnw.cmd test -Dtest=IdempotencyConcurrencyTest#singlePacketDeliveredByThreeBridgesSettlesExactlyOnce
-```
-
-This test creates one packet, fires 3 threads at `BridgeIngestionService.ingest()` simultaneously, and verifies that exactly one settles, two are dropped as duplicates, and the sender is debited exactly once.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         SENDER PHONE (offline)                          │
-│  PaymentInstruction { sender, receiver, amount, pinHash, nonce, time }  │
-│              │                                                          │
-│              ▼ encrypt with server's RSA public key                     │
-│   MeshPacket { packetId, ttl, createdAt, ciphertext }                   │
-└──────────────────────────────────────┬──────────────────────────────────┘
-                                       │ Bluetooth gossip
-                                       ▼
-        ┌─────────┐  hop   ┌─────────┐  hop   ┌─────────┐
-        │stranger1│ ─────▶ │stranger2│ ─────▶ │ bridge  │ ◀── walks outside
-        └─────────┘        └─────────┘        └────┬────┘     gets 4G
-                                                   │
-                                                   ▼ HTTPS POST
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     SPRING BOOT BACKEND (this project)                  │
-│                                                                         │
-│  /api/bridge/ingest                                                     │
-│       │                                                                 │
-│       ▼                                                                 │
-│  [1] hash ciphertext (SHA-256)                                          │
-│       │                                                                 │
-│       ▼                                                                 │
-│  [2] IdempotencyService.claim(hash)  ◀── atomic putIfAbsent (≈ Redis    │
-│       │                                  SETNX). Duplicates rejected    │
-│       │                                  here, before any work.         │
-│       ▼                                                                 │
-│  [3] HybridCryptoService.decrypt(ciphertext)                            │
-│       │       (RSA-OAEP unwraps AES key, AES-GCM decrypts payload       │
-│       │        AND verifies the auth tag — tampering = exception)       │
-│       ▼                                                                 │
-│  [4] Freshness check: signedAt within last 24h                          │
-│       │                                                                 │
-│       ▼                                                                 │
-│  [5] SettlementService.settle()                                         │
-│       @Transactional: debit sender, credit receiver, write ledger       │
-│       @Version on Account = optimistic locking (defense in depth)       │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## The three hard problems and how they're solved
-
-### Problem 1: Untrusted intermediates
-
-A random stranger's phone is carrying your transaction. How do you stop them from reading the amount or changing it?
-
-**Solution: Hybrid encryption (RSA-OAEP + AES-GCM).**
-
-The sender encrypts the payload with the server's public key. Only the server holds the private key, so intermediates see opaque ciphertext.
-
-But RSA can only encrypt small data (~245 bytes for a 2048-bit key), and our payload is JSON that could exceed that. So we use the standard hybrid pattern:
-
-1. Generate a fresh AES-256 key for *this packet*.
-2. Encrypt the JSON with **AES-256-GCM** (fast + authenticated).
-3. Encrypt just the AES key with **RSA-OAEP**.
-4. Concatenate: `[256 bytes RSA-encrypted AES key][12 bytes IV][AES ciphertext + 16-byte GCM tag]`.
-
-**Why GCM specifically?** It's authenticated encryption. If an intermediate flips one bit anywhere in the ciphertext, decryption throws an exception — the GCM tag won't verify. The server cannot be tricked into processing tampered data.
-
-This is the same scheme TLS uses. See `HybridCryptoService.java`.
-
-### Problem 2: The duplicate-storm
-
-Three bridge nodes hold the same packet. They all walk outside at the same instant. They all POST to `/api/bridge/ingest` within milliseconds of each other. If you naively process all three, the sender is debited ₹1500 instead of ₹500.
-
-**Solution: Atomic compare-and-set on the ciphertext hash.**
-
-The very first thing the server does on receiving a packet is compute `SHA-256(ciphertext)` and try to "claim" that hash:
-
-```java
-// IdempotencyService.java
-Instant prev = seen.putIfAbsent(packetHash, now);
-return prev == null;  // true = first claimer, false = duplicate
-```
-
-`ConcurrentHashMap.putIfAbsent` is atomic. Even if 100 threads call it at the exact same nanosecond, exactly one returns `null` (the first claimer) and the rest return the existing entry. Only the first claimer proceeds to decrypt and settle. The rest are short-circuited as `DUPLICATE_DROPPED`.
-
-**Why hash the ciphertext, not the packetId or the cleartext?**
-- `packetId` can be rewritten by a malicious intermediate. Two copies of the same payment could have different packetIds. Bad key.
-- The cleartext requires decryption first. We want to dedupe *before* spending CPU on RSA.
-- The ciphertext is authenticated by GCM, so any tampering is detectable on decrypt. Two legitimate deliveries of the same payment have byte-identical ciphertexts (AES is deterministic for a given key+IV+plaintext, and the same packet means the same key+IV+plaintext).
-
-In production this `ConcurrentHashMap` becomes Redis: `SET key NX EX 86400`. Same semantics, distributed across replicas.
-
-There's also a defense-in-depth fallback: `transactions.packet_hash` has a unique index. If the cache layer ever fails and two settlements somehow try to write the same hash, the database rejects the second one.
-
-### Problem 3: Replay attacks
-
-An attacker who captured a ciphertext weeks ago could replay it whenever convenient.
-
-**Solution: Two layers.**
-
-1. **Inside the encrypted payload**, the sender includes `signedAt` (epoch millis). The server rejects any packet older than 24 hours. The attacker can't change `signedAt` without breaking the GCM tag.
-2. **Inside the encrypted payload**, the sender includes a **nonce** (UUID). Even if Alice legitimately sends Bob ₹100 twice, the nonces differ → ciphertexts differ → hashes differ → both settle. But a *replay* of one specific signed packet is byte-identical, so the idempotency cache catches it.
-
-See `BridgeIngestionService.java` for the freshness check.
-
----
-
-## File-by-file walkthrough
-
-```
-upi-offline-mesh/
-├── pom.xml                                  Maven build, Spring Boot 3.3, Java 17
-├── mvnw, mvnw.cmd                           Maven wrapper (no install needed)
-├── README.md                                this file
-└── src/main/
-    ├── resources/
-    │   ├── application.properties           H2 in-memory DB, port 8080, TTLs
-    │   └── templates/dashboard.html         The interactive demo UI
-    └── java/com/demo/upimesh/
-        ├── UpiMeshApplication.java          Spring Boot main class
-        │
-        ├── model/                           ── Domain layer
-        │   ├── Account.java                 JPA entity. @Version = optimistic lock
-        │   ├── AccountRepository.java       Spring Data JPA
-        │   ├── Transaction.java             Settled-tx ledger. unique idx on packetHash
-        │   ├── TransactionRepository.java   Spring Data JPA
-        │   ├── MeshPacket.java              Wire format. Outer fields readable, ciphertext opaque
-        │   └── PaymentInstruction.java      Decrypted payload (sender/receiver/amount/nonce/time)
-        │
-        ├── crypto/                          ── Cryptography layer
-        │   ├── ServerKeyHolder.java         Generates RSA-2048 keypair on startup
-        │   └── HybridCryptoService.java     RSA-OAEP + AES-256-GCM encrypt/decrypt + ciphertext hash
-        │
-        ├── service/                         ── Business logic
-        │   ├── DemoService.java             Seeds accounts, simulates a sender phone
-        │   ├── VirtualDevice.java           One simulated phone in the mesh
-        │   ├── MeshSimulatorService.java    Gossip protocol across virtual devices
-        │   ├── IdempotencyService.java      ConcurrentHashMap = JVM-local Redis SETNX
-        │   ├── SettlementService.java       @Transactional debit + credit + ledger insert
-        │   └── BridgeIngestionService.java  THE pipeline: hash → claim → decrypt → freshness → settle
-        │
-        ├── controller/                      ── HTTP layer
-        │   ├── ApiController.java           All REST endpoints
-        │   └── DashboardController.java     Serves the dashboard HTML at /
-        │
-        └── config/
-            └── AppConfig.java               @EnableScheduling for cache eviction
-
-src/test/java/com/demo/upimesh/
-└── IdempotencyConcurrencyTest.java          The 3-bridges-at-once test + tamper test
-```
-
----
-
-## API reference
-
-| Method | Path | What it does |
+| Method | Path | Purpose |
 |---|---|---|
-| GET | `/` | Dashboard HTML |
-| GET | `/api/server-key` | Server's RSA public key (base64) |
-| GET | `/api/accounts` | All accounts and balances |
-| GET | `/api/transactions` | Last 20 transactions |
-| GET | `/api/mesh/state` | Current state of every virtual device |
-| POST | `/api/demo/send` | Simulate sender phone — encrypt + inject packet |
-| POST | `/api/mesh/gossip` | Run one round of gossip across the mesh |
-| POST | `/api/mesh/flush` | Bridges with internet upload to backend (parallel) |
-| POST | `/api/mesh/reset` | Clear mesh + idempotency cache |
-| POST | `/api/bridge/ingest` | **The production endpoint.** Real bridges POST here |
-| GET | `/h2-console` | Browse the in-memory database |
+| GET | / | Thymeleaf dashboard. |
+| GET | /api/server-key | Base64 public key and crypto scheme metadata. |
+| POST | /api/demo/send | Demo request { "senderVpa": "alice@demo", "receiverVpa": "bob@demo", "amount": 500, "pin": "1234", "ttl": 5, "startDevice": "phone-alice" }; returns packet ID, ciphertext preview, TTL, and injection device. ttl and startDevice are optional. |
+| GET | /api/mesh/state | Device IDs, connectivity, packet counts/IDs, and idempotency-record count. |
+| POST | /api/mesh/gossip | Performs one gossip round; returns transfer count and device counts. |
+| POST | /api/mesh/flush | Uploads bridge-held packets; returns upload count and each bridge's outcome, reason, and transaction ID. |
+| POST | /api/mesh/reset | Clears mesh packets and idempotency records only. |
+| POST | /api/bridge/ingest | Ingests a MeshPacket; optional headers X-Bridge-Node-Id and X-Hop-Count. |
+| GET | /api/accounts | Account records and current balances. |
+| GET | /api/transactions | Most recent 20 ledger records. |
 
-H2 console login: JDBC URL `jdbc:h2:mem:upimesh`, username `sa`, no password.
+MeshPacket JSON has packetId, ttl, createdAt (epoch milliseconds), and ciphertext. An ingestion response has outcome, packetHash, reason, and transactionId; for example, a successful result has outcome SETTLED, while a repeated packet returns DUPLICATE_DROPPED.
 
-### Request format for `/api/bridge/ingest`
+The dashboard uses same-origin fetch calls for these endpoints. All API paths require HTTP Basic authentication. Browser writes under /api also require a same-origin Origin header; the dashboard sends this automatically. Cross-origin API requests are not enabled.
 
-```http
-POST /api/bridge/ingest
-Content-Type: application/json
-X-Bridge-Node-Id: phone-bridge-42
-X-Hop-Count: 3
+## Security and demonstration limits
 
-{
-  "packetId": "550e8400-e29b-41d4-a716-446655440000",
-  "ttl": 2,
-  "createdAt": 1730000000000,
-  "ciphertext": "base64-encoded-RSA-and-AES-blob"
-}
-```
+This application is a portfolio demonstration, not a production payment service. The dashboard and API routes require one shared HTTP Basic username/password configured with PAYMESH_DEMO_USERNAME and PAYMESH_DEMO_PASSWORD. This is a single shared demo gate, not individual user accounts, identity management, or role-based authorization. API CSRF tokens are not used because dashboard.html is intentionally unchanged; API write requests instead require a same-origin Origin header. Use HTTPS when hosted publicly, keep credentials private, and do not reuse a real password. API writes have an in-memory per-client rate limit, but it is not a distributed abuse-control system. Public deployment defaults to read-only mode; account-level access and bridge identity are not provided.
 
-Response:
-```json
-{
-  "outcome": "SETTLED",                     // or "DUPLICATE_DROPPED" or "INVALID"
-  "packetHash": "a3f8c9...",
-  "reason": null,                            // populated on INVALID
-  "transactionId": 42                        // populated on SETTLED
-}
-```
+The entered PIN is not verified and provides no authentication. There is no real bank, UPI, NPCI, account provider, phone app, Bluetooth transport, or real settlement. The mesh and accounts are simulated. Local development may use an ephemeral RSA key; the production profile requires a persistent key supplied through the environment.
 
----
+## Deployment (Render + Neon)
+
+PayMesh can be deployed as a single **Render Free Web Service** backed by a **Neon PostgreSQL** database. This is a portfolio demo, not a production payment service. Public writes are disabled by default; the application has no bridge identity or user account system.
+
+### Architecture
+
+- One **Render Web Service** runs the Spring Boot JAR inside a Docker image built from the root `Dockerfile`. The image is a two-stage build: a Maven 3.9.9 + JDK 21 builder compiles the executable JAR, and an Eclipse Temurin 21 JRE runtime runs it as a non-root `paymesh` user.
+- One **Neon Free PostgreSQL** database holds the demo ledger and idempotency records. The application connects through the JDBC URL Neon provides; no credentials are committed to the repository.
+- No Docker Compose, no extra services, no external infrastructure.
+
+### Environment variables (set in the Render Web Service settings, not in source)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SPRING_DATASOURCE_URL` | yes | Neon JDBC connection string, e.g. `jdbc:postgresql://ep-xxx.neon.tech/neondb?sslmode=require`. Copy it from the Neon console; it must include `sslmode=require`. |
+| `SPRING_DATASOURCE_USERNAME` | yes | Neon database role. |
+| `SPRING_DATASOURCE_PASSWORD` | yes | Neon password. |
+| `PAYMESH_DEMO_USERNAME` | yes | Shared HTTP Basic username for the dashboard and API. |
+| `PAYMESH_DEMO_PASSWORD` | yes | Shared HTTP Basic password. Use a long, unique random value. |
+| `PAYMESH_RSA_PRIVATE_KEY_BASE64` | yes | Persistent PKCS#8 RSA private key encoded as Base64; store only as a host secret. |
+| `PAYMESH_DEMO_WRITES_ENABLED` | no | Defaults to `false` in the production profile. Keep disabled for a public demo. |
+| `PAYMESH_API_WRITE_LIMIT_PER_MINUTE` | no | In-memory per-client write limit; defaults to 30 in production. |
+| `SERVER_PORT` | no | Local override; Render injects `PORT` instead. |
+
+### Render configuration
+
+- **Build command:** `docker build -t paymesh .` (Render builds the Dockerfile automatically; the start command is the `ENTRYPOINT` in the image).
+- **Runtime:** Docker (the `Dockerfile` at the repository root).
+- **Plan:** Free. The service sleeps after 15 minutes of inactivity and wakes on the next request; the first request after a sleep is a cold start and may take a few seconds while the JAR initializes.
+
+### Initial migration behaviour
+
+On first startup, Flyway applies the existing migrations in `src/main/resources/db/migration/` (`V1__initial_schema.sql`, `V2__idempotency_records.sql`, `V3__idempotency_claim_token.sql`) against the Neon database. The application seeds Alice, Bob, Carol, and Dave only if the `accounts` table is empty, so a fresh Neon database is ready to use immediately after the first deploy. The demo credentials must be set before the first request or the service will fail to start.
+
+### Local development
+
+The local PostgreSQL instructions and the H2 test configuration are unchanged. The Dockerfile is for deployment only and is not used for local development.
 
 ## Tests
 
-Run all tests:
-```
-mvnw.cmd test
-```
+Run the full automated test suite from the project root:
 
-The three included tests:
+~~~powershell
+.\mvnw.cmd test
+~~~
 
-- **`encryptDecryptRoundTrip`** — sanity-check that hybrid encryption is symmetric.
-- **`tamperedCiphertextIsRejected`** — flip a byte in the ciphertext, verify that `BridgeIngestionService` returns `INVALID` instead of crashing or settling.
-- **`singlePacketDeliveredByThreeBridgesSettlesExactlyOnce`** — the headline test. Three threads, one packet, simultaneous delivery. Asserts exactly one `SETTLED`, two `DUPLICATE_DROPPED`, and that the sender's balance changed by exactly the amount once.
+On macOS/Linux use `./mvnw test`. Tests with the test profile use H2 in PostgreSQL compatibility mode. PostgreSqlIntegrationTest uses the default PostgreSQL configuration and requires the configured PostgreSQL database to be available.
 
----
+## CI and public demo safeguards
 
-## What's NOT real (and what would change for production)
+`.github/workflows/ci.yml` runs `./mvnw clean verify` on Java 21 with a fresh PostgreSQL 16 service. It creates only a throwaway `paymesh_test` database and does not use `.env` files or deployment credentials. CI does not deploy.
 
-This is a teaching demo. To make it production-grade you'd swap these things:
+The Docker image activates the `production` profile, runs as a non-root user, requires `PAYMESH_RSA_PRIVATE_KEY_BASE64`, and checks `/health`. Set `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `PAYMESH_DEMO_USERNAME`, `PAYMESH_DEMO_PASSWORD`, and `PAYMESH_RSA_PRIVATE_KEY_BASE64` in the hosting provider's secret settings. Generate an RSA PKCS#8 private key, Base64-encode its DER bytes, and store that value as a secret; never put it in the repository or an image build argument. Production writes default to disabled. `PAYMESH_API_WRITE_LIMIT_PER_MINUTE` adjusts the in-memory per-IP limit and defaults to 30. The limiter resets on restart and is not shared across replicas.
 
-| What's in the demo | What it would be in production |
-|---|---|
-| H2 in-memory DB | PostgreSQL / MySQL with replicas |
-| `ConcurrentHashMap` for idempotency | Redis with `SET NX EX` |
-| RSA keypair regenerated on every startup | Private key in HSM (AWS KMS, HashiCorp Vault). Public key cached on devices. |
-| Server-side `DemoService.createPacket()` | Same code running on Android, in a Kotlin port |
-| Software-simulated mesh (`MeshSimulatorService`) | Real BLE GATT or Wi-Fi Direct between phones |
-| One settlement service that owns the ledger | Integration with NPCI / a real bank core |
-| No auth on `/api/bridge/ingest` | Mutual TLS or signed bridge-node certificates |
-| In-memory accounts seeded on startup | Real KYC'd users, real VPAs, real PIN verification against the bank |
-| H2 console exposed | Disabled |
-| No rate limiting | Per-bridge-node rate limit, per-sender velocity check |
-| Logs to console | Structured logs to a SIEM, alerts on `INVALID` spikes |
+Flyway migrations are versioned under `src/main/resources/db/migration`. The current migrations create tables/indexes and add an idempotency column; they do not drop or truncate tables. Back up persistent data before future migrations and review every migration before applying it to a hosted database. Hibernate is set to `validate`, so schema changes must go through Flyway.
 
-The cryptography and idempotency code is essentially production-shaped. The infrastructure around it is what changes.
+### Free portfolio hosting considerations
 
----
+The Render + Neon example above is a possible demonstration setup, not a guaranteed permanent zero-cost service. Render free web services spin down after 15 minutes without traffic and have no persistent disk; Neon Free currently lists 100 CU-hours and 1 GB per project and scales compute to zero after inactivity. Provider plans change, so check [Render free services](https://render.com/docs/free) and [Neon plans](https://neon.tech/docs/introduction/plans) before relying on free availability. Expect cold starts, limited database capacity, potential data expiration or policy changes, and no production SLA. Never use this demo for financial records or real payments.
 
-## Honest limitations of the concept
-
-I want this README to be useful to you when someone reviews the project, so let's be straight about what this design **does not** solve. These are not implementation bugs — they're inherent to "no internet, anywhere in the chain":
-
-1. **The receiver has no way to verify the sender has the funds.** When sender hands receiver a phone showing "₹500 sent," it's an IOU, not a settled payment. If the sender's account is empty when the packet finally reaches the backend, the settlement will be `REJECTED` and the receiver is out ₹500 with no recourse. *This is why real offline UPI (UPI Lite) uses a pre-funded hardware-backed wallet* — to give cryptographic proof of available funds offline.
-2. **A malicious sender can double-spend offline.** With ₹500 in their account, they could send a packet to Bob in basement A, walk to basement B, and send another ₹500 to Carol. Whichever packet hits the backend first wins; the other gets `REJECTED`. Same root cause as #1.
-3. **Bluetooth in real life is hard.** Background BLE on Android is heavily throttled since Android 8. iOS peripheral mode is locked down. Two strangers' phones reliably forming a GATT connection while the apps aren't actively open is genuinely difficult and a lot of energy. This demo skips that problem entirely by simulating the mesh.
-4. **Privacy / liability.** A stranger carries your encrypted transaction packet on their phone. They can't read it, but its existence is metadata. In a real deployment you'd want to think about regulatory disclosures and what happens if a device is seized.
-
-For a college / portfolio project: name the concept honestly as **"mesh-routed deferred settlement"** rather than "real-time offline UPI," and you'll have a much stronger pitch. The cryptography and idempotency work here is real engineering and worth showing off.
-
----
-
-## Troubleshooting
-
-**`java: command not found`** — Install JDK 17+. On Windows, `winget install EclipseAdoptium.Temurin.17.JDK` or download from adoptium.net.
-
-**Port 8080 already in use** — Change `server.port` in `application.properties`.
-
-**First `mvnw.cmd` run hangs for a long time** — It's downloading Maven (~10 MB) then dependencies (~80 MB). Give it 2–3 minutes on a normal connection. After that, startup is ~5 seconds.
-
-**`mvnw.cmd : The term 'mvnw.cmd' is not recognized`** — On PowerShell you need to prefix with `.\`: `.\mvnw.cmd spring-boot:run`.
-
-**Tests fail intermittently** — The concurrency test is timing-sensitive. If it ever flakes, run it 3x; if it consistently fails on your hardware, file the actual failure output.
-
----
-
-## License
-
-Demo code, no license. Use it however you want for learning.
+For public access, use a dedicated empty database, TLS at the host, unique demo credentials and RSA key stored as host secrets, `SPRING_PROFILES_ACTIVE=production`, `PAYMESH_DEMO_WRITES_ENABLED=false`, and health check path `/health`. The app has one shared HTTP Basic identity and a process-local write limiter, so public write mode should remain disabled absent additional abuse controls.

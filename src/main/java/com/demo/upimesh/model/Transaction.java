@@ -12,39 +12,42 @@ import java.time.Instant;
  */
 @Entity
 @Table(name = "transactions",
-        indexes = { @Index(name = "idx_packet_hash", columnList = "packetHash", unique = true) })
+        indexes = {
+                @Index(name = "idx_tx_packet_hash", columnList = "packet_hash", unique = true),
+                @Index(name = "idx_tx_settled_at", columnList = "settled_at")
+        })
 public class Transaction {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true, length = 64)
+    @Column(name = "packet_hash", nullable = false, unique = true, length = 64)
     private String packetHash; // SHA-256 hex of the encrypted packet
 
-    @Column(nullable = false)
+    @Column(name = "sender_vpa", nullable = false, length = 100)
     private String senderVpa;
 
-    @Column(nullable = false)
+    @Column(name = "receiver_vpa", nullable = false, length = 100)
     private String receiverVpa;
 
-    @Column(nullable = false, precision = 19, scale = 2)
+    @Column(name = "amount", nullable = false, precision = 19, scale = 2)
     private BigDecimal amount;
 
-    @Column(nullable = false)
+    @Column(name = "signed_at", nullable = false)
     private Instant signedAt; // When the sender originally signed it (offline)
 
-    @Column(nullable = false)
+    @Column(name = "settled_at", nullable = false)
     private Instant settledAt; // When the backend actually processed it
 
-    @Column(nullable = false)
+    @Column(name = "bridge_node_id", nullable = false, length = 100)
     private String bridgeNodeId; // Which mesh node finally delivered it
 
-    @Column(nullable = false)
+    @Column(name = "hop_count", nullable = false)
     private int hopCount; // How many devices it passed through
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "status", nullable = false, length = 20)
     private Status status;
 
     public enum Status { SETTLED, REJECTED }

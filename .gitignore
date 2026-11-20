@@ -6,3 +6,17 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# Local environment and assistant/editor state
+.env*
+!.env.example
+.claude/
+
+# Other generated output
+build/
+out/
+
+# Local backups and generated review copies
+deployment-backup-*/
+*.bak
+src/test/java/com/demo/upimesh/ReproTest.java

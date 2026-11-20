@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-postgres-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Create isolated integration test database
+        env:
+          PGPASSWORD: ci-only-postgres-password
+        run: |
+          psql -h 127.0.0.1 -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE paymesh_test LOGIN PASSWORD 'ci-only-test-password';"
+          psql -h 127.0.0.1 -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE DATABASE paymesh_test OWNER paymesh_test;"
+          psql -h 127.0.0.1 -p 5433 -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "REVOKE CONNECT ON DATABASE paymesh_test FROM PUBLIC;"
+      - name: Verify tests and package
+        env:
+          PAYMESH_TEST_DATABASE_PASSWORD: ci-only-test-password
+        run: ./mvnw -B -ntp clean verify
