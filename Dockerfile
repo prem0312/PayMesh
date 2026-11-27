@@ -1,5 +1,5 @@
-﻿# ==============================================================================
-# PayMesh â€” Render + Neon deployment image
+# ==============================================================================
+# PayMesh â€” Render deployment image
 # ==============================================================================
 # Multi-stage build:
 #   Stage 1 (builder) compiles the executable Spring Boot JAR with Maven + JDK 21.
@@ -50,13 +50,15 @@ RUN chown -R paymesh:paymesh /app
 USER paymesh
 
 # Render injects PORT; Spring Boot binds to it. Fall back to 8080 locally.
-ENV PORT=8080
 ENV SPRING_PROFILES_ACTIVE=production
 ENV PAYMESH_REQUIRE_PERSISTENT_RSA_KEY=true
+# Avoid competing for Render's 0.1 CPU with the optimizing compiler during startup.
+ENV JDK_JAVA_OPTIONS="-XX:TieredStopAtLevel=1"
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl --fail --silent http://127.0.0.1:${PORT}/health || exit 1
+    CMD curl --fail --silent "http://127.0.0.1:${PORT:-${SERVER_PORT:-8080}}/health" || exit 1
 
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+# Spring's relaxed binding reads SERVER_PORT directly. Give Render's PORT precedence.
+ENTRYPOINT ["sh", "-c", "export SERVER_PORT=\"${PORT:-${SERVER_PORT:-8080}}\"; exec java -jar /app/app.jar \"$@\"", "--"]

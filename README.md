@@ -95,47 +95,47 @@ All API paths are under /api. JSON request/response examples use the application
 
 MeshPacket JSON has packetId, ttl, createdAt (epoch milliseconds), and ciphertext. An ingestion response has outcome, packetHash, reason, and transactionId; for example, a successful result has outcome SETTLED, while a repeated packet returns DUPLICATE_DROPPED.
 
-The dashboard uses same-origin fetch calls for these endpoints. All API paths require HTTP Basic authentication. Browser writes under /api also require a same-origin Origin header; the dashboard sends this automatically. Cross-origin API requests are not enabled.
+The local dashboard uses same-origin fetch calls for these endpoints. In public dashboard mode, the browser uses `GET /api/demo/dashboard` for the synthetic read-only view. The detailed API routes require HTTP Basic authentication. Browser writes under `/api` also require a same-origin Origin header, which the browser sends automatically.
 
 ## Security and demonstration limits
 
-This application is a portfolio demonstration, not a production payment service. The dashboard and API routes require one shared HTTP Basic username/password configured with PAYMESH_DEMO_USERNAME and PAYMESH_DEMO_PASSWORD. This is a single shared demo gate, not individual user accounts, identity management, or role-based authorization. API CSRF tokens are not used because dashboard.html is intentionally unchanged; API write requests instead require a same-origin Origin header. Use HTTPS when hosted publicly, keep credentials private, and do not reuse a real password. API writes have an in-memory per-client rate limit, but it is not a distributed abuse-control system. Public deployment defaults to read-only mode; account-level access and bridge identity are not provided.
+PayMesh simulates payments and settlement. The production dashboard and its read-only snapshot are available without credentials. The rest of the API and the OpenAPI documentation use the shared HTTP Basic credentials configured by `PAYMESH_DEMO_USERNAME` and `PAYMESH_DEMO_PASSWORD`. Public dashboard mode blocks API writes even with those credentials. When writes are enabled for local simulation, the API requires a same-origin request and applies its in-memory per-client rate limit.
 
 The entered PIN is not verified and provides no authentication. There is no real bank, UPI, NPCI, account provider, phone app, Bluetooth transport, or real settlement. The mesh and accounts are simulated. Local development may use an ephemeral RSA key; the production profile requires a persistent key supplied through the environment.
 
-## Deployment (Render + Neon)
+## Deployment on Render
 
-PayMesh can be deployed as a single **Render Free Web Service** backed by a **Neon PostgreSQL** database. This is a portfolio demo, not a production payment service. Public writes are disabled by default; the application has no bridge identity or user account system.
+PayMesh can run as a **Render Free Web Service** backed by **Render Free Postgres** in the same region. The production profile disables demo writes by default.
 
 ### Architecture
 
 - One **Render Web Service** runs the Spring Boot JAR inside a Docker image built from the root `Dockerfile`. The image is a two-stage build: a Maven 3.9.9 + JDK 21 builder compiles the executable JAR, and an Eclipse Temurin 21 JRE runtime runs it as a non-root `paymesh` user.
-- One **Neon Free PostgreSQL** database holds the demo ledger and idempotency records. The application connects through the JDBC URL Neon provides; no credentials are committed to the repository.
-- No Docker Compose, no extra services, no external infrastructure.
+- One **Render Free Postgres** database holds the demo ledger and idempotency records. Select PostgreSQL 16 to match local development and CI.
 
-### Environment variables (set in the Render Web Service settings, not in source)
+### Environment variables in the Render Web Service settings
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SPRING_DATASOURCE_URL` | yes | Neon JDBC connection string, e.g. `jdbc:postgresql://ep-xxx.neon.tech/neondb?sslmode=require`. Copy it from the Neon console; it must include `sslmode=require`. |
-| `SPRING_DATASOURCE_USERNAME` | yes | Neon database role. |
-| `SPRING_DATASOURCE_PASSWORD` | yes | Neon password. |
+| `SPRING_DATASOURCE_URL` | yes | Build the JDBC URL from the Render database's internal hostname and database name using `jdbc:postgresql://<internal-host>:5432/<database>?sslmode=require`. |
+| `SPRING_DATASOURCE_USERNAME` | yes | Render Postgres username. |
+| `SPRING_DATASOURCE_PASSWORD` | yes | Render Postgres password. |
 | `PAYMESH_DEMO_USERNAME` | yes | Shared HTTP Basic username for the dashboard and API. |
 | `PAYMESH_DEMO_PASSWORD` | yes | Shared HTTP Basic password. Use a long, unique random value. |
 | `PAYMESH_RSA_PRIVATE_KEY_BASE64` | yes | Persistent PKCS#8 RSA private key encoded as Base64; store only as a host secret. |
-| `PAYMESH_DEMO_WRITES_ENABLED` | no | Defaults to `false` in the production profile. Keep disabled for a public demo. |
+| `PAYMESH_PUBLIC_DASHBOARD` | no | Defaults to `true` in production. Enables anonymous dashboard viewing and blocks all API writes. |
+| `PAYMESH_DEMO_WRITES_ENABLED` | no | Defaults to `false` in production. Interactive simulation requires public dashboard mode to be disabled. |
 | `PAYMESH_API_WRITE_LIMIT_PER_MINUTE` | no | In-memory per-client write limit; defaults to 30 in production. |
-| `SERVER_PORT` | no | Local override; Render injects `PORT` instead. |
+| `PORT` | automatic | Render supplies the HTTP port. The production profile binds to `0.0.0.0`. |
 
 ### Render configuration
 
-- **Build command:** `docker build -t paymesh .` (Render builds the Dockerfile automatically; the start command is the `ENTRYPOINT` in the image).
-- **Runtime:** Docker (the `Dockerfile` at the repository root).
-- **Plan:** Free. The service sleeps after 15 minutes of inactivity and wakes on the next request; the first request after a sleep is a cold start and may take a few seconds while the JAR initializes.
+- Select the Docker runtime and the root `Dockerfile`. Render builds the image and starts it using its existing entrypoint.
+- Select the Free plan and set the HTTP health check path to `/health`. The endpoint checks database connectivity.
+- Create the Free Postgres database in the web service's region and use its internal hostname. See [Render Postgres connection details](https://render.com/docs/postgresql-creating-connecting#internal-connections).
 
 ### Initial migration behaviour
 
-On first startup, Flyway applies the existing migrations in `src/main/resources/db/migration/` (`V1__initial_schema.sql`, `V2__idempotency_records.sql`, `V3__idempotency_claim_token.sql`) against the Neon database. The application seeds Alice, Bob, Carol, and Dave only if the `accounts` table is empty, so a fresh Neon database is ready to use immediately after the first deploy. The demo credentials must be set before the first request or the service will fail to start.
+On first startup, Flyway applies the existing migrations in `src/main/resources/db/migration/` against the Render database. The existing startup logic initializes the four demo accounts when the table is empty. Set the demo credentials and persistent RSA key before startup.
 
 ### Local development
 
@@ -161,6 +161,6 @@ Flyway migrations are versioned under `src/main/resources/db/migration`. The cur
 
 ### Free portfolio hosting considerations
 
-The Render + Neon example above is a possible demonstration setup, not a guaranteed permanent zero-cost service. Render free web services spin down after 15 minutes without traffic and have no persistent disk; Neon Free currently lists 100 CU-hours and 1 GB per project and scales compute to zero after inactivity. Provider plans change, so check [Render free services](https://render.com/docs/free) and [Neon plans](https://neon.tech/docs/introduction/plans) before relying on free availability. Expect cold starts, limited database capacity, potential data expiration or policy changes, and no production SLA. Never use this demo for financial records or real payments.
+The Free Web Service has 512 MB RAM and 0.1 CPU, spins down after 15 minutes without traffic, and uses an ephemeral filesystem. Free Postgres has 1 GB of storage, expires after 30 days, and has no managed backups. To continue the demo after expiry, the owner must manually provision a replacement and update the datasource environment variables. For a zero-cost deployment, use a Hobby workspace without a payment method. Render suspends free services or pauses builds when the applicable monthly quota runs out. See [Render free service limits](https://render.com/docs/free) and [Render billing FAQ](https://render.com/docs/faq).
 
 For public access, use a dedicated empty database, TLS at the host, unique demo credentials and RSA key stored as host secrets, `SPRING_PROFILES_ACTIVE=production`, `PAYMESH_DEMO_WRITES_ENABLED=false`, and health check path `/health`. The app has one shared HTTP Basic identity and a process-local write limiter, so public write mode should remain disabled absent additional abuse controls.

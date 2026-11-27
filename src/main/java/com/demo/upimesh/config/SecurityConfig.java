@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.userdetails.User;
@@ -32,6 +33,9 @@ public class SecurityConfig {
     @Value("${paymesh.demo.writes-enabled:true}")
     private boolean demoWritesEnabled;
 
+    @Value("${paymesh.demo.public-dashboard:false}")
+    private boolean publicDashboard;
+
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
@@ -41,9 +45,15 @@ public class SecurityConfig {
                 .httpBasic(basic -> {})
                 .formLogin(form -> form.disable())
                 .logout(logout -> logout.disable())
-                .authorizeHttpRequests(auth -> auth.requestMatchers("/health").permitAll().anyRequest().authenticated())
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers("/health").permitAll();
+                    if (publicDashboard) {
+                        auth.requestMatchers(HttpMethod.GET, "/", "/api/demo/dashboard").permitAll();
+                    }
+                    auth.anyRequest().authenticated();
+                })
                 .addFilterAfter(new ApiWriteOriginFilter(), AuthorizationFilter.class)
-                .addFilterAfter(new ApiRateLimitFilter(apiWriteLimitPerMinute, demoWritesEnabled),
+                .addFilterAfter(new ApiRateLimitFilter(apiWriteLimitPerMinute, demoWritesEnabled && !publicDashboard),
                         ApiWriteOriginFilter.class);
         return http.build();
     }

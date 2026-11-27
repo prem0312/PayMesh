@@ -35,6 +35,10 @@ import java.util.*;
 @Validated
 public class ApiController {
 
+    private static final Map<String, String> DEMO_ACCOUNT_NAMES = Map.of(
+            "alice@demo", "Alice", "bob@demo", "Bob", "carol@demo", "Carol", "dave@demo", "Dave");
+    private static final String DEMO_BRIDGE = "phone-bridge";
+
     @Autowired private ServerKeyHolder serverKey;
     @Autowired private DemoService demo;
     @Autowired private MeshSimulatorService mesh;
@@ -55,6 +59,31 @@ public class ApiController {
     }
 
     // ---------------------------------------------------------------- demo
+
+    @GetMapping("/demo/dashboard")
+    public Map<String, Object> publicDashboard() {
+        var devices = mesh.getDevices().stream()
+                .map(device -> Map.of("deviceId", device.getDeviceId(), "hasInternet", device.hasInternet(),
+                        "packetCount", device.packetCount()))
+                .toList();
+        var demoAccounts = accountRepo.findAllById(DEMO_ACCOUNT_NAMES.keySet()).stream()
+                .filter(account -> DEMO_ACCOUNT_NAMES.get(account.getVpa()).equals(account.getHolderName()))
+                .sorted(Comparator.comparing(Account::getVpa))
+                .toList();
+        var demoVpas = demoAccounts.stream().map(Account::getVpa).toList();
+        var accounts = demoAccounts.stream()
+                .map(account -> Map.of("vpa", account.getVpa(), "holderName", account.getHolderName(),
+                        "balance", account.getBalance()))
+                .toList();
+        var transactions = txRepo.findTop20ByOrderByIdDesc().stream()
+                .filter(tx -> demoVpas.contains(tx.getSenderVpa()) && demoVpas.contains(tx.getReceiverVpa())
+                        && DEMO_BRIDGE.equals(tx.getBridgeNodeId()))
+                .map(tx -> Map.of("id", tx.getId(), "senderVpa", tx.getSenderVpa(), "receiverVpa", tx.getReceiverVpa(),
+                        "amount", tx.getAmount(), "status", tx.getStatus(), "bridgeNodeId", DEMO_BRIDGE,
+                        "hopCount", tx.getHopCount(), "settledAt", tx.getSettledAt()))
+                .toList();
+        return Map.of("devices", devices, "accounts", accounts, "transactions", transactions);
+    }
 
     /**
      * Demo helper: build a packet on the server (simulating a sender phone)
