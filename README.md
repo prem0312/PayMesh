@@ -1,8 +1,12 @@
 # PayMesh — Offline Payment Mesh Demo
 
-PayMesh is a lightweight portfolio application that demonstrates a simulated, mesh-routed deferred payment flow. A dashboard creates an encrypted packet, simulated phones gossip it to one another, and an internet-connected bridge submits it to a Spring Boot backend. The backend claims the packet idempotently and settles a demo ledger in PostgreSQL.
+[**Live Demo**](https://paymesh-hmen.onrender.com) · [![GitHub Actions CI](https://github.com/prem0312/PayMesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/prem0312/PayMesh/actions/workflows/ci.yml)
 
-**This is not UPI, a bank integration, or a real payment system.** It moves only balances in a local demo database. The PIN is hashed into the encrypted demo instruction but is not verified and does not authenticate a user.
+PayMesh demonstrates deferred payment settlement with a simulated device mesh. The dashboard creates an encrypted packet, virtual phones relay it through simulated gossip, and a virtual bridge submits it to a Spring Boot backend. PostgreSQL coordinates duplicate delivery and stores the demo ledger.
+
+**The hosted dashboard is read-only and requires no login.** All accounts, balances, devices, and transactions are simulated. The mesh runs in memory without physical device networking. No real UPI, banking, or financial transactions occur. The first visit after idle time may take about a minute while the free Render service wakes up.
+
+**Stack** · Java 21, Spring Boot 3.4.3, Spring Security, Spring Data JPA / Hibernate, Thymeleaf, PostgreSQL 16, Flyway, Maven, Docker, and GitHub Actions. Tests use JUnit 5 with H2 or PostgreSQL.
 
 ## Requirements
 
@@ -54,6 +58,8 @@ On startup, Flyway applies the existing migrations and the application seeds Ali
 
 ## Dashboard demonstration
 
+Run this interactive walkthrough on a local instance with demo writes enabled. The hosted dashboard lets visitors inspect its simulated ledger and mesh state.
+
 Use a fresh demo database if you want the initial seeded balances. The dashboard does not need or validate a real PIN; its default 1234 is only demo input.
 
 1. Open the dashboard and wait for the account balances and simulated devices to load.
@@ -70,19 +76,32 @@ Expected first outcome: SETTLED; expected second outcome: DUPLICATE_DROPPED. A p
 
 ## How the payment path works
 
-POST /api/demo/send simulates sender-side packet construction inside the server. MeshSimulatorService performs simplified in-memory gossip. POST /api/mesh/flush sends bridge-held packets concurrently to BridgeIngestionService in-process. The service calls IdempotencyService before decrypting; the database primary key arbitrates first claims. SettlementService locks and checks the claimed record and token, then commits balance changes, the transaction row, and the terminal idempotency state in one transaction.
+```mermaid
+flowchart LR
+    A["Local dashboard"] --> B["Encrypted packet"]
+    B --> C["In-memory mesh gossip"]
+    C --> D["Simulated bridge"]
+    D --> E["Packet claim and validation"]
+    E --> F["PostgreSQL ledger settlement"]
+```
+
+1. `POST /api/demo/send` constructs an encrypted packet inside the server. AES-256-GCM encrypts the instruction, and RSA-OAEP wraps the per-packet AES key. `MeshSimulatorService` relays the packet between virtual devices and decrements its time to live.
+2. `POST /api/mesh/flush` sends bridge-held packets to `BridgeIngestionService` in-process. `IdempotencyService` claims the SHA-256 ciphertext hash before decryption. The database primary key arbitrates competing first claims across concurrent deliveries.
+3. `SettlementService` locks the claim row and verifies its token before settling. Balance changes, the transaction row, and the terminal idempotency state commit together. A competing delivery cannot settle a completed claim, and a stale worker cannot settle after its claim token has been replaced.
 
 The default simulator has just one bridge. Repeating flush demonstrates sequential duplicate handling. The existing tests exercise concurrent bridge delivery; the dashboard's default topology does not simulate multiple bridges racing on the same packet.
 
-A fresh RSA key pair is generated each time the application starts. Packets created before a restart cannot be decrypted after that restart.
+Local startup generates an ephemeral RSA key if no private key is configured. Packets encrypted with an ephemeral key cannot be decrypted after a restart. The production profile requires a persistent key.
 
 ## HTTP API
 
-All API paths are under /api. JSON request/response examples use the application models; amounts are decimal numbers.
+Application API paths are under `/api`. JSON request and response examples use the application models. Amounts are decimal numbers.
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | / | Thymeleaf dashboard. |
+| GET | /health | Public database connectivity check. |
+| GET | /api/demo/dashboard | Read-only dashboard snapshot, available anonymously in public dashboard mode. |
 | GET | /api/server-key | Base64 public key and crypto scheme metadata. |
 | POST | /api/demo/send | Demo request { "senderVpa": "alice@demo", "receiverVpa": "bob@demo", "amount": 500, "pin": "1234", "ttl": 5, "startDevice": "phone-alice" }; returns packet ID, ciphertext preview, TTL, and injection device. ttl and startDevice are optional. |
 | GET | /api/mesh/state | Device IDs, connectivity, packet counts/IDs, and idempotency-record count. |
@@ -99,24 +118,25 @@ The local dashboard uses same-origin fetch calls for these endpoints. In public 
 
 ## Security and demonstration limits
 
-PayMesh simulates payments and settlement. The production dashboard and its read-only snapshot are available without credentials. The rest of the API and the OpenAPI documentation use the shared HTTP Basic credentials configured by `PAYMESH_DEMO_USERNAME` and `PAYMESH_DEMO_PASSWORD`. Public dashboard mode blocks API writes even with those credentials. When writes are enabled for local simulation, the API requires a same-origin request and applies its in-memory per-client rate limit.
+The hosted dashboard, its read-only snapshot, and `/health` are available without credentials. Protected APIs and OpenAPI documentation require the shared HTTP Basic credentials configured by `PAYMESH_DEMO_USERNAME` and `PAYMESH_DEMO_PASSWORD`. Public dashboard mode blocks API writes, including payment mutations, even with valid credentials. When writes are enabled for local simulation, the API requires a same-origin request and applies its in-memory per-client rate limit.
 
 The entered PIN is not verified and provides no authentication. There is no real bank, UPI, NPCI, account provider, phone app, Bluetooth transport, or real settlement. The mesh and accounts are simulated. Local development may use an ephemeral RSA key; the production profile requires a persistent key supplied through the environment.
 
 ## Deployment on Render
 
-PayMesh can run as a **Render Free Web Service** backed by **Render Free Postgres** in the same region. The production profile disables demo writes by default.
+The live demo runs as a **Render Free Web Service** backed by **Render Free Postgres** in the same region. The production profile disables demo writes by default.
 
 ### Architecture
 
 - One **Render Web Service** runs the Spring Boot JAR inside a Docker image built from the root `Dockerfile`. The image is a two-stage build: a Maven 3.9.9 + JDK 21 builder compiles the executable JAR, and an Eclipse Temurin 21 JRE runtime runs it as a non-root `paymesh` user.
 - One **Render Free Postgres** database holds the demo ledger and idempotency records. Select PostgreSQL 16 to match local development and CI.
+- The Docker builder uses Google Cloud Storage's Maven Central mirror for dependency prefetch and packaging, with strict checksum checks. The Maven Wrapper and GitHub Actions use their regular Maven configuration.
 
 ### Environment variables in the Render Web Service settings
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SPRING_DATASOURCE_URL` | yes | Build the JDBC URL from the Render database's internal hostname and database name using `jdbc:postgresql://<internal-host>:5432/<database>?sslmode=require`. |
+| `SPRING_DATASOURCE_URL` | yes | Set the private JDBC URL for the Render database and require TLS with `sslmode=require`. |
 | `SPRING_DATASOURCE_USERNAME` | yes | Render Postgres username. |
 | `SPRING_DATASOURCE_PASSWORD` | yes | Render Postgres password. |
 | `PAYMESH_DEMO_USERNAME` | yes | Shared HTTP Basic username for the dashboard and API. |
@@ -135,21 +155,19 @@ PayMesh can run as a **Render Free Web Service** backed by **Render Free Postgre
 
 ### Initial migration behaviour
 
-On first startup, Flyway applies the existing migrations in `src/main/resources/db/migration/` against the Render database. The existing startup logic initializes the four demo accounts when the table is empty. Set the demo credentials and persistent RSA key before startup.
-
-### Local development
-
-The local PostgreSQL instructions and the H2 test configuration are unchanged. The Dockerfile is for deployment only and is not used for local development.
+On first startup, Flyway applies the three versioned migrations in `src/main/resources/db/migration/`. The application initializes four demo accounts when the account table is empty. Set the demo credentials and persistent RSA key before startup.
 
 ## Tests
 
-Run the full automated test suite from the project root:
+The repository has **48 automated tests** covering PostgreSQL migrations and settlement, concurrent duplicate delivery, crash recovery, API validation and access controls, mesh reset behavior, and health checks.
+
+Run the full suite from the project root:
 
 ~~~powershell
 .\mvnw.cmd test
 ~~~
 
-On macOS/Linux use `./mvnw test`. Tests with the test profile use H2 in PostgreSQL compatibility mode. PostgreSqlIntegrationTest uses the default PostgreSQL configuration and requires the configured PostgreSQL database to be available.
+On macOS/Linux use `./mvnw test`. Tests with the test profile use H2 in PostgreSQL compatibility mode. `PostgreSqlIntegrationTest` requires a dedicated PostgreSQL database named `paymesh_test` on loopback port `5433`, a role named `paymesh_test`, and the test password supplied through `PAYMESH_TEST_DATABASE_PASSWORD`. The PostgreSQL tests reset test ledger and idempotency data between cases.
 
 ## CI and public demo safeguards
 
