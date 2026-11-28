@@ -14,18 +14,19 @@ FROM maven:3.9.9-eclipse-temurin-21 AS builder
 
 WORKDIR /build
 
-# Copy only the POM first to leverage Docker layer caching for dependencies.
+# Copy Maven inputs before application sources so dependency layers can be reused.
 COPY pom.xml .
+COPY docker/maven-settings.xml ./maven-settings.xml
 COPY mvnw .
 COPY mvnw.cmd .
 COPY .mvn/ .mvn/
 
 # Pre-fetch dependencies in a separate layer so source changes rebuild less.
-RUN mvn -B dependency:go-offline
+RUN mvn -B -C -s maven-settings.xml dependency:go-offline
 
 # Copy the source tree and package the executable JAR, skipping tests.
 COPY src/ src/
-RUN mvn -B -DskipTests package
+RUN mvn -B -C -s maven-settings.xml -DskipTests package
 
 # --- Stage 2: runtime --------------------------------------------------------
 FROM eclipse-temurin:21-jre AS runtime
